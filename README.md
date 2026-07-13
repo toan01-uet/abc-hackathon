@@ -138,9 +138,47 @@ This repository contains a from-scratch Python reimplementation of the concept a
 ### Prerequisites
 
 - Python >= 3.13 and [`uv`](https://docs.astral.sh/uv/)
-- Node.js + `npx` (used to run `mcp-remote`, the bridge that gives Notion's hosted MCP server browser-based OAuth sign-in)
+- Node.js + `npx` (used to run `mcp-remote`, the bridge that gives Notion's hosted MCP server browser-based OAuth sign-in) — see [Installing Node.js/npx](#installing-nodejsnpx-for-mcp-remote) below if you don't have it yet
 - An API key for an OpenAI-compatible LLM endpoint (default setup uses FPT Cloud AI Marketplace)
 - A Notion account with edit access to whatever page/database you want tasks created in
+
+#### Installing Node.js/npx (for `mcp-remote`)
+
+Connecting to Notion (step 3 below) runs `npx -y mcp-remote https://mcp.notion.com/mcp`, which requires Node.js (npx ships with it). If `npx --version` already works in your terminal, skip this.
+
+**Ubuntu / Debian:**
+
+```bash
+# Recommended: NodeSource repo (gets a recent LTS version; the Ubuntu repo's default nodejs is often too old)
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+node --version
+npx --version
+```
+
+Alternative via [nvm](https://github.com/nvm-sh/nvm) (no `sudo` needed, easier to manage multiple versions):
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+# restart your shell, then:
+nvm install --lts
+```
+
+**Windows:**
+
+- Easiest: download and run the LTS installer from [nodejs.org](https://nodejs.org/) (includes npm/npx), then open a **new** terminal (PowerShell or Command Prompt) so `PATH` picks it up.
+- Or via [winget](https://learn.microsoft.com/windows/package-manager/winget/): `winget install OpenJS.NodeJS.LTS`
+- Or via [nvm-windows](https://github.com/coreybutler/nvm-windows): install it, then `nvm install lts` followed by `nvm use <version>`.
+
+Verify in a new terminal:
+
+```powershell
+node --version
+npx --version
+```
+
+If you're running this project's app itself under WSL (Windows Subsystem for Linux), follow the Ubuntu/Debian instructions inside your WSL distro instead — Node.js installed on native Windows won't be visible from within WSL.
 
 ### Install & configure
 
