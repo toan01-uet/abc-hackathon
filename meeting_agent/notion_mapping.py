@@ -125,18 +125,32 @@ async def create_data_source(state: SessionState, database_name: str, parent_pag
     return result
 
 
+_MAX_MAPPING_ATTEMPTS = 3
+
+
 async def resolve_property_mapping(state: SessionState, data_source_id: str) -> PropertyMapping:
     """Every Notion data source has exactly one title-typed property, so a
     result with title_property=None is always wrong, not a legitimate 'no
-    match' — retry once (the model occasionally omits it, observed as
-    non-determinism, not a systematic error) before giving up."""
+    match'. Observed failure mode: the agent's own reasoning correctly
+    identifies the title property, but the separate structured-output call
+    (FptStructuredRunnable, run outside that reasoning turn) sometimes comes
+    back with every field null anyway — a quirk of this endpoint under
+    structured extraction, not something a single retry reliably avoids.
+    Retries with an explicit callout of the previous failure before giving up."""
     tools = mcp_tools.get_tools_by_name(state, _READ_ONLY_DISCOVERY_TOOLS)
     user_prompt = f"Fetch the schema of the Notion data source with id '{data_source_id}' and map our task fields onto it."
 
-    for attempt in range(2):
+    for attempt in range(_MAX_MAPPING_ATTEMPTS):
         agent = build_notion_agent(tools)
         _, messages = await run_agent(agent, _PROPERTY_MAPPING_SYSTEM_PROMPT, [HumanMessage(content=user_prompt)])
-        messages.append(HumanMessage(content="Based on the schema you fetched, report the property mapping now."))
+        follow_up = "Based on the schema you fetched, report the property mapping now."
+        if attempt > 0:
+            follow_up += (
+                " (Note: a previous attempt to extract this as structured data came back empty/null even "
+                "though the schema was already fetched above — make sure to actually report the title_property "
+                "you identified, using its exact name string, not null.)"
+            )
+        messages.append(HumanMessage(content=follow_up))
         mapping = await FptStructuredRunnable(PropertyMapping).ainvoke(messages)
         log.info("resolve_property_mapping: attempt=%d mapping=%s", attempt, mapping.model_dump())
         if mapping.title_property is not None:

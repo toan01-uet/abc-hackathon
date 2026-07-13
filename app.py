@@ -293,9 +293,16 @@ async def _create_tasks():
     progress = cl.Message(content=f"Creating/updating {len(state.tasks)} task(s) in Notion…")
     await progress.send()
 
-    results = await notion_mapping.create_tasks_in_notion(
-        state, state.notion_data_source_id, state.property_mapping, state.tasks, state.existing_page_ids
-    )
+    try:
+        results = await notion_mapping.create_tasks_in_notion(
+            state, state.notion_data_source_id, state.property_mapping, state.tasks, state.existing_page_ids
+        )
+    except LLMResponseError as e:
+        log.exception("create_tasks_in_notion failed")
+        progress.content = f"⚠️ Couldn't create/update tasks in Notion: {e}"
+        await progress.update()
+        state.stage = "reviewing_tasks"
+        return
 
     action_labels = {"created": "created", "updated": "progress updated", "unchanged": "already up to date"}
     lines = []

@@ -130,15 +130,17 @@ class FptStructuredRunnable(Runnable):
             ),
         ]
         ai_msg = await self._plain_model.ainvoke(plain_messages)
+        log.debug("FptStructuredRunnable: plain-prompt raw content for schema=%s: %r", self._schema.__name__, ai_msg.content)
         content = ai_msg.content if ai_msg.content and ai_msg.content.strip() not in ("", "{}") else None
         if content:
             try:
                 return self._parse(_extract_json_text(content))
             except Exception:
                 log.warning(
-                    "FptStructuredRunnable: plain-prompt content for schema=%s didn't parse, "
+                    "FptStructuredRunnable: plain-prompt content for schema=%s didn't parse (raw=%r), "
                     "falling back to response_format=json_schema",
                     self._schema.__name__,
+                    content,
                 )
         else:
             log.warning(

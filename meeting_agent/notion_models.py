@@ -49,13 +49,24 @@ class PropertyMapping(BaseModel):
     )
 
 
+class NotionPageSpec(BaseModel):
+    """A single page within notion-create-pages' `pages` array. Properties is
+    its own nested object — deliberately NOT a flat `dict` for the whole page,
+    so the JSON Schema forces the model to nest property key/value pairs under
+    `properties` instead of placing them as siblings of `properties`/`content`
+    (observed failure: the model emitted {"Name": ..., "Status": ..., "content":
+    ...} directly under a page item, which notion-create-pages rejected with
+    "Unrecognized keys" since it has no top-level "Name"/"Status" keys)."""
+
+    properties: dict = Field(description="Flat name->value map of ONLY the properties named in the mapping")
+    content: str = Field(default="", description="Markdown body text for the page")
+
+
 class NotionCreatePagesArgs(BaseModel):
     """Mirrors the real notion-create-pages tool input shape."""
 
     parent: dict[str, str] = Field(description='e.g. {"data_source_id": "..."} or {"type": "data_source_id", "data_source_id": "..."}')
-    pages: list[dict] = Field(
-        description='Each item: {"properties": {flat name->value map}, "content": "markdown body"}'
-    )
+    pages: list[NotionPageSpec]
 
 
 class NotionUpdatePageArgs(BaseModel):
