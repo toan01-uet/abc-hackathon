@@ -12,6 +12,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from meeting_agent import extraction  # noqa: E402
+from meeting_agent.logging_config import setup_logging  # noqa: E402
+
+setup_logging()
 
 
 async def main(path: str):

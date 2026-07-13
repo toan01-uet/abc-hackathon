@@ -125,7 +125,7 @@ The demo is based on a recruitment scenario for a shoe store:
 This repository contains a from-scratch Python reimplementation of the concept above (the original Copilot Studio/Power Platform prototype description is preserved above for context):
 
 - **Chainlit** — chat UI, with its native MCP client support for connecting to external tool servers
-- **Notion**, via the official Notion MCP server — task/page creation, connected live through Chainlit's MCP integration (stdio `npx` server or Notion's hosted MCP)
+- **Notion**, via Notion's official hosted MCP server (`https://mcp.notion.com/mcp`) — task/page creation, connected live through Chainlit's MCP integration (`stdio`, bridged with `mcp-remote` so the browser OAuth sign-in works even though Chainlit itself has no native OAuth support for MCP)
 - **An OpenAI-compatible LLM endpoint** (FPT Cloud AI Marketplace) — transcript extraction and structured-output/tool-calling
 
 ### Running it
@@ -133,7 +133,7 @@ This repository contains a from-scratch Python reimplementation of the concept a
 1. `uv sync`
 2. Copy `.env.example` to `.env` and fill in `FPT_API_KEY` (never commit the real key)
 3. `uv run chainlit run app.py -w`
-4. Paste/attach a transcript, review the extracted tasks, connect a Notion MCP server via the 🔌 icon, then confirm to create the tasks
+4. Paste/attach a transcript, review the extracted tasks, connect Notion via the 🔌 icon (add a `stdio` server with command `npx -y mcp-remote https://mcp.notion.com/mcp`, then sign in with Notion in the browser window that opens — first run only), then confirm to create the tasks
 
 ### Module layout
 

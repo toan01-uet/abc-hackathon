@@ -74,9 +74,9 @@ scripts/
    ```
    Mở trình duyệt tại link được in ra (mặc định `http://localhost:8000`).
 
-4. **Chuẩn bị Notion MCP server** (chọn 1 trong 2 cách, làm qua icon 🔌 trong khung chat của Chainlit):
-   - **Cách A — server local qua npx** (cần Node.js): thêm MCP server kiểu `stdio`, command: `npx -y @notionhq/notion-mcp-server`, cần có Notion internal integration token (tạo tại notion.so/my-integrations, và share database đích với integration đó).
-   - **Cách B — Notion hosted MCP** (không cần Node.js): thêm MCP server kiểu `streamable-http`, URL: `https://mcp.notion.com/mcp`, đăng nhập OAuth ngay trong dialog.
+4. **Chuẩn bị Notion MCP server** (qua icon 🔌 trong khung chat của Chainlit), dùng **Notion hosted MCP qua `mcp-remote`**: thêm MCP server kiểu `stdio`, command: `npx -y mcp-remote https://mcp.notion.com/mcp`.
+   - Lý do cần `mcp-remote`: Chainlit 2.11.1 (bản đang dùng) **không tự hỗ trợ OAuth** cho MCP `streamable-http`/`sse` — form add server chỉ nhận `name`/`url`/`headers` tĩnh, gửi thẳng request không kèm token nên Notion trả `401 Unauthorized` (đã kiểm chứng bằng cách đọc trực tiếp `chainlit/server.py`: nó gọi `streamablehttp_client(url, headers=...)`, không có logic bắt 401 → mở OAuth). `mcp-remote` là stdio proxy chuẩn: lần chạy đầu tự mở trình duyệt để đăng nhập Notion (OAuth thật, PKCE flow), cache token tại `~/.mcp-auth`, các lần sau tự kết nối lại không cần đăng nhập lại.
+   - Không cần tạo Notion internal integration token thủ công — chỉ cần đăng nhập bằng tài khoản Notion trong cửa sổ trình duyệt tự mở ra.
 
 5. **Đi hết luồng demo:** paste/đính kèm transcript → xem danh sách task được trích xuất → gõ chỉnh sửa nếu cần → bấm "Looks good, proceed" → xác nhận database Notion + bảng mapping field → bấm "✅ Create tasks" → kiểm tra page thật đã được tạo trong Notion đúng field.
 

@@ -4,14 +4,19 @@ import chainlit as cl
 from mcp import ClientSession
 
 from meeting_agent import extraction, mcp_tools, notion_mapping
+from meeting_agent.langchain_llm import LLMResponseError
+from meeting_agent.logging_config import get_logger, setup_logging
 from meeting_agent.models import Task, TaskList
 from meeting_agent.state import get_state, reset_state
+
+setup_logging()
+log = get_logger("app")
 
 WELCOME = """**Meeting Tasks Agent**
 
 Paste a meeting transcript below (or attach a `.txt`/`.md` file) and I'll pull out the action items — owner, due date, and dependencies — for you to review.
 
-When you're ready to create the tasks in Notion, connect a Notion MCP server via the 🔌 icon in the composer (either the official `npx -y @notionhq/notion-mcp-server`, or Notion's hosted MCP at `https://mcp.notion.com/mcp`). You can do this any time before confirming."""
+When you're ready to create the tasks in Notion, connect Notion's hosted MCP server via the 🔌 icon in the composer: add a `stdio` server with command `npx -y mcp-remote https://mcp.notion.com/mcp`. The first time, it'll open a browser for you to sign in to Notion (OAuth) — after that it reconnects automatically. You can do this any time before confirming."""
 
 
 def _render_task_list(tasks: list[Task]) -> str:
@@ -24,6 +29,8 @@ def _render_task_list(tasks: list[Task]) -> str:
             meta.append(f"owner: {t.owner}")
         if t.due_date:
             meta.append(f"due: {t.due_date}")
+        if t.status:
+            meta.append(f"status: {t.status}")
         if t.dependencies:
             meta.append(f"depends on: {', '.join(t.dependencies)}")
         meta_str = f" _({'; '.join(meta)})_" if meta else ""
@@ -45,6 +52,7 @@ async def _extract_from_message(message: cl.Message) -> str | None:
 @cl.on_chat_start
 async def on_chat_start():
     reset_state()
+    log.info("chat_start: new session")
     await cl.Message(content=WELCOME).send()
 
 
@@ -70,9 +78,16 @@ async def _handle_collecting_transcript(message: cl.Message, state):
     state.transcript = transcript
     thinking = cl.Message(content="Extracting tasks…")
     await thinking.send()
-    task_list = await extraction.extract_tasks(transcript)
+    try:
+        task_list = await extraction.extract_tasks(transcript)
+    except LLMResponseError as e:
+        log.exception("extract_tasks failed")
+        thinking.content = f"⚠️ Couldn't extract tasks: {e}"
+        await thinking.update()
+        return
     state.tasks = task_list.tasks
     state.stage = "reviewing_tasks"
+    log.info("stage: collecting_transcript -> reviewing_tasks")
 
     thinking.content = (
         f"**Extracted {len(state.tasks)} task(s):**\n\n{_render_task_list(state.tasks)}\n\n"
@@ -91,7 +106,13 @@ async def _handle_reviewing_tasks(message: cl.Message, state):
         return
     thinking = cl.Message(content="Revising…")
     await thinking.send()
-    task_list = await extraction.revise_tasks(TaskList(tasks=state.tasks), feedback)
+    try:
+        task_list = await extraction.revise_tasks(TaskList(tasks=state.tasks), feedback)
+    except LLMResponseError as e:
+        log.exception("revise_tasks failed")
+        thinking.content = f"⚠️ Couldn't revise tasks: {e}"
+        await thinking.update()
+        return
     state.tasks = task_list.tasks
     thinking.content = f"**Revised task list ({len(state.tasks)} task(s)):**\n\n{_render_task_list(state.tasks)}"
     thinking.actions = [
@@ -104,6 +125,7 @@ async def _handle_reviewing_tasks(message: cl.Message, state):
 async def on_proceed_to_confirm(action: cl.Action):
     state = get_state()
     state.stage = "confirming"
+    log.info("stage: reviewing_tasks -> confirming")
     await _run_confirmation_flow()
 
 
@@ -112,55 +134,125 @@ async def _run_confirmation_flow():
 
     if not state.mcp_clients:
         await cl.Message(
-            content="No Notion MCP server is connected yet. Connect one via the 🔌 icon in the composer, then send any message to continue."
+            content="No Notion MCP server is connected yet. Click the 🔌 icon in the composer, add a `stdio` server with command `npx -y mcp-remote https://mcp.notion.com/mcp`, sign in with Notion in the browser window that opens, then send any message to continue."
         ).send()
         return
 
-    discovery_prompt = (
-        "You are helping a user pick which Notion database (data source) their extracted meeting tasks "
-        "should be created in. Use the available tools to search/list data sources, then reply with a short "
-        "plain-text summary of the best candidate data source, ending your reply with a line exactly of the form "
-        "`DATA_SOURCE_ID: <id>` and `DATA_SOURCE_NAME: <name>`."
-    )
     task_titles = ", ".join(t.title for t in state.tasks)
-    user_prompt = f"The extracted tasks to create: {task_titles}. Find the most likely target Notion database."
 
-    reply, _ = await mcp_tools.run_tool_calling_loop(
-        state, discovery_prompt, [{"role": "user", "content": user_prompt}]
-    )
+    try:
+        candidates_result = await notion_mapping.discover_data_sources(state, task_titles)
+    except LLMResponseError as e:
+        log.exception("discover_data_sources failed")
+        await cl.Message(content=f"⚠️ Couldn't discover a Notion database: {e}").send()
+        state.stage = "reviewing_tasks"
+        return
+    candidates = candidates_result.candidates
 
-    data_source_id = None
-    data_source_name = None
-    for line in reply.splitlines():
-        if line.strip().startswith("DATA_SOURCE_ID:"):
-            data_source_id = line.split(":", 1)[1].strip()
-        if line.strip().startswith("DATA_SOURCE_NAME:"):
-            data_source_name = line.split(":", 1)[1].strip()
-
-    if not data_source_id:
+    if not candidates:
         await cl.Message(
-            content=f"Couldn't determine a target Notion database automatically.\n\n{reply}\n\nTell me the database name and try again."
+            content="Couldn't find any Notion database automatically. "
+            "Make sure the target database is shared with your Notion connection, then try again."
         ).send()
         state.stage = "reviewing_tasks"
         return
 
+    candidate_lines = "\n".join(
+        f"- **{c.name}**" + (f" — {c.url}" if c.url else "") for c in candidates
+    )
+    res = await cl.AskActionMessage(
+        content=f"Found {len(candidates)} candidate Notion database(s):\n\n{candidate_lines}\n\nWhich one should tasks be created in?",
+        actions=[
+            cl.Action(name="pick_data_source", payload={"id": c.id, "name": c.name}, label=c.name)
+            for c in candidates
+        ]
+        + [
+            cl.Action(name="create_new_data_source", payload={}, label="➕ Create a new database"),
+            cl.Action(name="cancel_pick", payload={}, label="❌ None of these / Cancel"),
+        ],
+        timeout=300,
+    ).send()
+
+    if not res or res.get("name") == "cancel_pick":
+        await cl.Message(content="Cancelled. No tasks were created.").send()
+        state.stage = "reviewing_tasks"
+        return
+
+    if res.get("name") == "create_new_data_source":
+        name_msg = await cl.AskUserMessage(content="What should the new database be called?", timeout=300).send()
+        if not name_msg or not name_msg.get("output", "").strip():
+            await cl.Message(content="Cancelled. No tasks were created.").send()
+            state.stage = "reviewing_tasks"
+            return
+        new_db_name = name_msg["output"].strip()
+
+        parent_msg = await cl.AskUserMessage(
+            content="Which Notion page should this new database be created in? (name or URL)", timeout=300
+        ).send()
+        if not parent_msg or not parent_msg.get("output", "").strip():
+            await cl.Message(content="Cancelled. No tasks were created.").send()
+            state.stage = "reviewing_tasks"
+            return
+        parent_page_name = parent_msg["output"].strip()
+
+        creating_msg = cl.Message(content=f"Creating database **{new_db_name}** inside **{parent_page_name}**…")
+        await creating_msg.send()
+        try:
+            created = await notion_mapping.create_data_source(state, new_db_name, parent_page_name)
+        except LLMResponseError as e:
+            log.exception("create_data_source failed")
+            creating_msg.content = f"⚠️ Couldn't create the database: {e}"
+            await creating_msg.update()
+            state.stage = "reviewing_tasks"
+            return
+        data_source_id = created.id
+        data_source_name = created.name
+        creating_msg.content = f"Created database **{data_source_name}**" + (
+            f" — {created.url}" if created.url else ""
+        )
+        await creating_msg.update()
+    else:
+        data_source_id = res["payload"]["id"]
+        data_source_name = res["payload"]["name"]
+
+    log.info("confirmation_flow: using data_source_id=%s name=%s", data_source_id, data_source_name)
     state.notion_data_source_id = data_source_id
     state.notion_data_source_name = data_source_name
 
-    schema = await notion_mapping.fetch_data_source_schema(state, data_source_id)
-    mapping = notion_mapping.compute_property_mapping(schema)
+    try:
+        mapping = await notion_mapping.resolve_property_mapping(state, data_source_id)
+    except Exception as e:
+        log.exception("confirmation_flow: failed to resolve Notion property mapping")
+        await cl.Message(content=f"⚠️ Couldn't read the Notion database schema: {e}").send()
+        state.stage = "reviewing_tasks"
+        return
     state.property_mapping = mapping
+    log.info("confirmation_flow: property_mapping=%s", mapping.model_dump())
+
+    try:
+        state.existing_page_ids = await notion_mapping.find_existing_tasks(state, data_source_id, mapping, state.tasks)
+    except LLMResponseError as e:
+        log.exception("find_existing_tasks failed")
+        await cl.Message(content=f"⚠️ Couldn't check for existing tasks, proceeding as if none exist: {e}").send()
+        state.existing_page_ids = {}
 
     mapping_lines = [
-        f"- Title → `{mapping['title']}`" if mapping["title"] else "- Title → (no title property found!)",
-        f"- Owner → `{mapping['owner']}`" if mapping["owner"] else "- Owner → page body text (no matching property)",
-        f"- Due date → `{mapping['due_date']}`" if mapping["due_date"] else "- Due date → page body text (no matching property)",
+        f"- Title → `{mapping.title_property}`" if mapping.title_property else "- Title → (no title property found!)",
+        f"- Owner → `{mapping.owner_property}`" if mapping.owner_property else "- Owner → page body text (no matching property)",
+        f"- Due date → `{mapping.due_date_property}`" if mapping.due_date_property else "- Due date → page body text (no matching property)",
+        f"- Status → `{mapping.status_property}`" if mapping.status_property else "- Status → page body text (no matching property)",
         "- Dependencies → page body text",
     ]
 
+    new_count = len(state.tasks) - len(state.existing_page_ids)
+    update_count = len(state.existing_page_ids)
+    summary_line = f"**{new_count}** new task(s) to create"
+    if update_count:
+        summary_line += f", **{update_count}** already exist and will just have their progress updated"
+
     res = await cl.AskActionMessage(
         content=(
-            f"Ready to create **{len(state.tasks)}** task(s) in Notion database **{data_source_name}**.\n\n"
+            f"{summary_line} in Notion database **{data_source_name}**.\n\n"
             "Field mapping:\n" + "\n".join(mapping_lines)
         ),
         actions=[
@@ -172,6 +264,7 @@ async def _run_confirmation_flow():
     ).send()
 
     decision = res.get("payload", {}).get("decision") if res else "cancel"
+    log.info("confirmation_flow: user decision=%s", decision)
 
     if decision == "confirm":
         state.write_confirmed = True
@@ -188,20 +281,29 @@ async def _run_confirmation_flow():
 async def _create_tasks():
     state = get_state()
     if not state.write_confirmed or not state.notion_data_source_id or not state.property_mapping:
+        log.error(
+            "create_tasks: internal error, write_confirmed=%s data_source_id=%s property_mapping=%s",
+            state.write_confirmed,
+            state.notion_data_source_id,
+            state.property_mapping,
+        )
         await cl.Message(content="Internal error: write was not properly confirmed.").send()
         return
 
-    progress = cl.Message(content=f"Creating {len(state.tasks)} task(s) in Notion…")
+    progress = cl.Message(content=f"Creating/updating {len(state.tasks)} task(s) in Notion…")
     await progress.send()
 
     results = await notion_mapping.create_tasks_in_notion(
-        state, state.notion_data_source_id, state.property_mapping, state.tasks
+        state, state.notion_data_source_id, state.property_mapping, state.tasks, state.existing_page_ids
     )
 
+    action_labels = {"created": "created", "updated": "progress updated", "unchanged": "already up to date"}
     lines = []
     for r in results:
-        icon = "✅" if r["ok"] else "❌"
-        lines.append(f"{icon} {r['task']}" + ("" if r["ok"] else f" — {r['detail']}"))
+        icon = "✅" if r.ok else "❌"
+        label = action_labels.get(r.action, r.action)
+        lines.append(f"{icon} {r.task_title} ({label})" + ("" if r.ok else f" — {r.detail}"))
+    log.info("create_tasks: done, %d/%d succeeded", sum(r.ok for r in results), len(results))
 
     progress.content = "**Done:**\n\n" + "\n".join(lines)
     await progress.update()
@@ -211,6 +313,7 @@ async def _create_tasks():
 @cl.on_message
 async def on_message(message: cl.Message):
     state = get_state()
+    log.debug("on_message: stage=%s content_len=%d", state.stage, len(message.content or ""))
 
     if state.stage == "collecting_transcript":
         await _handle_collecting_transcript(message, state)

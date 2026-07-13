@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 import chainlit as cl
+from langchain_core.tools import BaseTool
 from mcp import ClientSession
 
 from .models import Task
+from .notion_models import PropertyMapping
 
 Stage = Literal["collecting_transcript", "reviewing_tasks", "confirming", "creating", "done"]
 
@@ -16,11 +18,12 @@ class SessionState:
     stage: Stage = "collecting_transcript"
     transcript: str | None = None
     tasks: list[Task] = field(default_factory=list)
-    mcp_tool_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    mcp_tool_cache: dict[str, dict[str, BaseTool]] = field(default_factory=dict)
     mcp_clients: dict[str, ClientSession] = field(default_factory=dict)
     notion_data_source_id: str | None = None
     notion_data_source_name: str | None = None
-    property_mapping: dict | None = None
+    property_mapping: PropertyMapping | None = None
+    existing_page_ids: dict[str, str] = field(default_factory=dict)
     write_confirmed: bool = False
 
 

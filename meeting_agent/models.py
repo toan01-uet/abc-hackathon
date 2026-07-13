@@ -8,6 +8,11 @@ class Task(BaseModel):
     due_date: str | None = Field(default=None, description="ISO 8601 date (YYYY-MM-DD) if mentioned, else null")
     dependencies: list[str] = Field(default_factory=list, description="Titles of other tasks this one depends on")
     source_excerpt: str = Field(default="", description="Short quote from the transcript this task was derived from")
+    status: str | None = Field(
+        default=None,
+        description="Progress state inferred from the transcript wording (e.g. 'Not started', 'In progress', "
+        "'Done'), in the transcript's own language, or null if not indicated",
+    )
 
 
 class TaskList(BaseModel):
