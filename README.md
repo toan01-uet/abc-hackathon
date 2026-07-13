@@ -7,6 +7,8 @@ The Meeting Tasks Agent extracts action items from meeting transcripts and helps
 
 The agent bridges the gap between discussion and execution by ensuring that no action items are lost and that follow-up becomes part of the operational workflow.
 
+> **Note:** The Problem/Solution/Key Features/Architecture/Architectural Choices/Demo/Scenario sections below describe the *original* Copilot Studio/Power Platform prototype (Planner + Azure DevOps connectors) and are kept for historical context. **The actual code in this repository is a from-scratch Python reimplementation targeting Notion instead** — see [Technologies Used](#technologies-used) onward for what's actually here and how to run it.
+
 ---
 
 ## Problem
@@ -125,35 +127,136 @@ The demo is based on a recruitment scenario for a shoe store:
 This repository contains a from-scratch Python reimplementation of the concept above (the original Copilot Studio/Power Platform prototype description is preserved above for context):
 
 - **Chainlit** — chat UI, with its native MCP client support for connecting to external tool servers
+- **LangChain / LangGraph** — LLM wrapper, structured output, and the agentic tool-calling loop used to talk to Notion's MCP tools
 - **Notion**, via Notion's official hosted MCP server (`https://mcp.notion.com/mcp`) — task/page creation, connected live through Chainlit's MCP integration (`stdio`, bridged with `mcp-remote` so the browser OAuth sign-in works even though Chainlit itself has no native OAuth support for MCP)
-- **An OpenAI-compatible LLM endpoint** (FPT Cloud AI Marketplace) — transcript extraction and structured-output/tool-calling
-
-### Running it
-
-1. `uv sync`
-2. Copy `.env.example` to `.env` and fill in `FPT_API_KEY` (never commit the real key)
-3. `uv run chainlit run app.py -w`
-4. Paste/attach a transcript, review the extracted tasks, connect Notion via the 🔌 icon (add a `stdio` server with command `npx -y mcp-remote https://mcp.notion.com/mcp`, then sign in with Notion in the browser window that opens — first run only), then confirm to create the tasks
-
-### Module layout
-
-- `app.py` — Chainlit entry point (chat flow, MCP connect/disconnect handlers, confirmation gate)
-- `meeting_agent/extraction.py` — LLM-based task extraction/revision (structured JSON output)
-- `meeting_agent/mcp_tools.py` — connector-agnostic MCP tool discovery, dispatch, and the agentic tool-calling loop
-- `meeting_agent/notion_mapping.py` — Notion-specific: data-source schema fetch, field→property fuzzy matching, deterministic page creation
-- `scripts/smoke_extract.py` — fast extraction-only test loop against `samples/*.txt`, no Chainlit required
+- **An OpenAI-compatible LLM endpoint** (FPT Cloud AI Marketplace, `DeepSeek-V4-Flash` by default) — transcript extraction and structured-output/tool-calling
 
 ---
 
-## Repository Contents (original Power Platform prototype)
+## Setup
 
-- Power Platform solution export (.zip)
-- README with architecture and explanation
+### Prerequisites
+
+- Python >= 3.13 and [`uv`](https://docs.astral.sh/uv/)
+- Node.js + `npx` (used to run `mcp-remote`, the bridge that gives Notion's hosted MCP server browser-based OAuth sign-in)
+- An API key for an OpenAI-compatible LLM endpoint (default setup uses FPT Cloud AI Marketplace)
+- A Notion account with edit access to whatever page/database you want tasks created in
+
+### Install & configure
+
+```bash
+uv sync
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```
+FPT_API_KEY=your-api-key-here
+FPT_BASE_URL=https://mkp-api.fptcloud.com/v1
+LLM_MODEL=DeepSeek-V4-Flash
+```
+
+Never commit the real `.env` (it's gitignored). Optional env vars for debugging: `LOG_LEVEL=DEBUG` (verbose logging of every LLM/MCP call) and `LOG_FILE=<path>` (also write logs to a file).
+
+### Run the app
+
+```bash
+uv run chainlit run app.py -w
+```
+
+Open the printed URL (default `http://localhost:8000`). `-w` enables auto-reload on code changes — note it only reloads `app.py` reliably; if you edit a file under `meeting_agent/`, restart the process to be safe.
+
+### Quick extraction-only test (no Chainlit, no Notion)
+
+Useful for iterating on the extraction prompt or verifying the LLM endpoint works at all:
+
+```bash
+uv run python scripts/smoke_extract.py samples/transcript_en.txt
+uv run python scripts/smoke_extract.py samples/transcript_vi.txt
+# or your own file:
+uv run python scripts/smoke_extract.py path/to/your_transcript.txt
+```
+
+Prints the extracted `TaskList` as JSON. No Notion connection needed.
 
 ---
 
-## Notes
-The architectural description above (Human-in-the-loop, instruction-based orchestration, modular connectors, tool-based execution) was originally written for the Power Platform prototype and has been carried over as the design basis for this Python reimplementation.
+## Using the agent, step by step
+
+### 1. Provide a meeting transcript
+
+In the chat, either:
+- **Paste** the transcript text directly, or
+- **Attach** a `.txt`/`.md` file (drag-and-drop or the 📎 icon in the composer)
+
+The agent extracts action items — title, description, owner, due date, dependencies, and an inferred progress status — and shows them as a numbered list.
+
+### 2. Review and correct
+
+Reply with free-text corrections as needed, e.g.:
+- `"merge tasks 2 and 3"`
+- `"John is the owner of task 1"`
+- `"task 4 is already done"`
+
+Each correction re-runs extraction against the current list + your feedback and re-displays it. Repeat as many times as needed.
+
+Click **✅ Looks good, proceed** when the list is ready.
+
+### 3. Connect Notion (can be done any time before this point too)
+
+Click the 🔌 icon in the message composer → **Add MCP server**:
+
+| Field | Value |
+|---|---|
+| Type | `stdio` |
+| Command | `npx -y mcp-remote https://mcp.notion.com/mcp` |
+
+The first time, this opens a browser window for you to sign in to Notion and grant access — no manual token/integration setup needed. Subsequent connections reuse the cached session. Once connected, Chainlit shows "Connected MCP server `notion` — N tools available."
+
+If you proceed without connecting first, the agent will just prompt you to connect before continuing.
+
+### 4. Pick (or create) the target Notion database
+
+After proceeding, the agent searches your Notion workspace and lists candidate databases as buttons:
+
+- Click one of the listed databases, **or**
+- Click **➕ Create a new database** — you'll be asked for a name and which existing Notion page it should live in; the agent creates it there with a title, Owner, and Due date property, **or**
+- Click **❌ None of these / Cancel** to abort
+
+### 5. Confirm before anything is written
+
+The agent reads the chosen database's real schema and maps your task fields (title/owner/due date/status) onto its actual property names. You'll see:
+
+- How many tasks are brand-new vs. already exist in the database (see below)
+- The field mapping it resolved
+- **✅ Create tasks** / **✏️ Keep editing** / **❌ Cancel**
+
+**Nothing is written to Notion before you click "Create tasks."**
+
+### 6. Duplicate detection
+
+Before writing, the agent checks whether each task already exists in the target database (by title match). For tasks that already exist, it **updates only their progress/status property** instead of creating a duplicate page; brand-new tasks are created as new pages. The final result lists each task as `created`, `progress updated`, or `already up to date`.
+
+---
+
+## Module layout
+
+- `app.py` — Chainlit entry point: chat flow/state machine, MCP connect/disconnect handlers, all human-in-the-loop confirmation gates
+- `meeting_agent/config.py` — loads `.env` (`FPT_API_KEY`, `FPT_BASE_URL`, `LLM_MODEL`)
+- `meeting_agent/models.py` — `Task`/`TaskList` Pydantic models (the extraction domain model)
+- `meeting_agent/state.py` — per-session `SessionState` (stage, tasks, MCP tool cache, resolved mapping, etc.)
+- `meeting_agent/langchain_llm.py` — `FptStructuredRunnable`, a LangChain `Runnable` that gets structured JSON output from the LLM (plain-prompt JSON is the primary strategy, with `response_format=json_schema` as a fallback — see note below)
+- `meeting_agent/extraction.py` — `extract_tasks`/`revise_tasks`, LCEL chains built on `FptStructuredRunnable`
+- `meeting_agent/agent.py` — `build_notion_agent`/`run_agent`, a LangGraph ReAct agent wrapper used for all Notion tool-calling
+- `meeting_agent/mcp_tools.py` — wraps Chainlit's raw MCP `ClientSession` into LangChain tools via `langchain-mcp-adapters`; `call_tool_directly` for one-off tool calls outside the agent loop
+- `meeting_agent/notion_models.py` — Pydantic models for the Notion-specific flow (`PropertyMapping`, `DataSourceCandidates`, `NotionCreatePagesArgs`, etc.)
+- `meeting_agent/notion_mapping.py` — Notion-specific logic: database discovery, property mapping resolution, duplicate-task detection, and the actual page create/update calls
+- `scripts/smoke_extract.py` — fast extraction-only test loop against `samples/*.txt`, no Chainlit or Notion required
+
+### A note on the LLM quirk this is built around
+
+The FPT Cloud endpoint (`DeepSeek-V4-Flash`) sometimes returns empty or lower-quality JSON when forced into `response_format=json_schema` mode, especially on longer transcripts. `FptStructuredRunnable` therefore asks for JSON via a plain prompt instruction first (proven more reliable through repeated testing) and only falls back to `response_format=json_schema` if that fails to parse. If you swap in a different LLM provider/model, you may be able to simplify or remove this fallback — but verify with real inputs first.
 
 ---
 
