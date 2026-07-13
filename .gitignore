@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .chainlit/.cache/
 .files/
+docs/
+node_modules/
