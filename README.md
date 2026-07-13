@@ -180,6 +180,11 @@ npx --version
 
 If you're running this project's app itself under WSL (Windows Subsystem for Linux), follow the Ubuntu/Debian instructions inside your WSL distro instead — Node.js installed on native Windows won't be visible from within WSL.
 
+**Notes/caveats — nothing else needs installing, but two environment quirks to know about:**
+- `npx -y mcp-remote ...` downloads and runs `mcp-remote` on the fly along with its own dependencies (`express`, `open`, etc.) — you don't need to `npm install` anything yourself.
+- `mcp-remote` tries to auto-open your default browser for the Notion OAuth sign-in. If you're on a headless machine (SSH session, remote server, container with no desktop/browser), that auto-open will silently fail, but the sign-in link is still printed to the terminal (`Please authorize this client by visiting: https://mcp.notion.com/authorize?...`) — copy that URL into any browser (even on a different device) to complete sign-in; the token gets cached locally afterward.
+- This repo's `.chainlit/config.toml` already allowlists `npx` for stdio MCP servers (`features.mcp.stdio.allowed_executables`), so no config change is needed here — only relevant if you're wiring this up in a fresh Chainlit project.
+
 ### Install & configure
 
 ```bash
