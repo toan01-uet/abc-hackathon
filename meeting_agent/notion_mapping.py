@@ -1,4 +1,5 @@
 import re
+import json
 
 from langchain_core.messages import HumanMessage
 
@@ -140,9 +141,32 @@ async def resolve_property_mapping(state: SessionState, data_source_id: str) -> 
     tools = mcp_tools.get_tools_by_name(state, _READ_ONLY_DISCOVERY_TOOLS)
     user_prompt = f"Fetch the schema of the Notion data source with id '{data_source_id}' and map our task fields onto it."
 
+    messages = []
     for attempt in range(_MAX_MAPPING_ATTEMPTS):
         agent = build_notion_agent(tools)
         _, messages = await run_agent(agent, _PROPERTY_MAPPING_SYSTEM_PROMPT, [HumanMessage(content=user_prompt)])
+        # Debug: summarize agent messages and any tool-call outputs to help diagnose schema parsing issues
+        try:
+            summary = []
+            for m in messages:
+                entry = {"type": getattr(m, "type", None)}
+                content = getattr(m, "content", None)
+                if content:
+                    entry["content"] = content if len(content) <= 2000 else content[:2000] + "..."
+                if getattr(m, "tool_calls", None):
+                    try:
+                        entry["tool_calls"] = [
+                            {"id": tc.get("id"), "name": tc.get("name"), "args": (tc.get("args") if isinstance(tc.get("args"), (str, dict)) else str(tc.get("args")))[:1000]}
+                            for tc in m.tool_calls
+                        ]
+                    except Exception:
+                        entry["tool_calls"] = "<could not serialize tool_calls>"
+                if getattr(m, "tool_call_id", None):
+                    entry["tool_call_id"] = getattr(m, "tool_call_id")
+                summary.append(entry)
+            log.debug("resolve_property_mapping: agent messages summary (attempt %d): %s", attempt, json.dumps(summary, ensure_ascii=False))
+        except Exception:
+            log.exception("resolve_property_mapping: failed to summarize agent messages for debug")
         follow_up = "Based on the schema you fetched, report the property mapping now."
         if attempt > 0:
             follow_up += (
@@ -157,9 +181,18 @@ async def resolve_property_mapping(state: SessionState, data_source_id: str) -> 
             return mapping
         log.warning("resolve_property_mapping: got title_property=None (every data source has one), retrying")
 
+    # Write a debug file with the last agent messages to help offline inspection
+    try:
+        debug_path = "notion_schema_debug.json"
+        with open(debug_path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps([{"type": getattr(m, "type", None), "content": getattr(m, "content", None)} for m in messages], ensure_ascii=False, indent=2))
+        log.error("resolve_property_mapping: wrote debug messages to %s", debug_path)
+    except Exception:
+        log.exception("resolve_property_mapping: failed to write debug messages to file")
+
     raise LLMResponseError(
-        f"Could not determine the title property for Notion data source '{data_source_id}' "
-        "after retrying. Check LOG_LEVEL=DEBUG logs for the raw schema/response."
+        f"Could not determine the title property for Notion data source '{data_source_id}' after retrying. "
+        "Check LOG_LEVEL=DEBUG logs and the generated notion_schema_debug.json for the raw schema/response."
     )
 
 

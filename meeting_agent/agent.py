@@ -1,7 +1,7 @@
 from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.errors import GraphRecursionError
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 from .langchain_llm import LLMResponseError, build_chat_model
 from .logging_config import get_logger
@@ -14,7 +14,7 @@ def build_notion_agent(tools: list[BaseTool]):
     The toolset passed in is the only safety boundary — never pass a write
     tool like notion-create-pages unless the caller has already obtained
     explicit user intent for that specific write."""
-    return create_react_agent(model=build_chat_model(), tools=tools)
+    return create_agent(model=build_chat_model(), tools=tools)
 
 
 def _log_agent_update(node_name: str, node_data: dict) -> None:
@@ -35,7 +35,7 @@ def _log_agent_update(node_name: str, node_data: dict) -> None:
 
 
 async def run_agent(
-    agent, system_prompt: str, user_messages: list[BaseMessage], max_turns: int = 15
+    agent, system_prompt: str, user_messages: list[BaseMessage], max_turns: int = 100
 ) -> tuple[str, list[BaseMessage]]:
     """Drop-in replacement for the old manual run_tool_calling_loop: runs the
     agent to completion (or until max_turns is exhausted) and returns

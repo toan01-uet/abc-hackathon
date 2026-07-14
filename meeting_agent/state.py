@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 import chainlit as cl
+from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 from mcp import ClientSession
 
@@ -25,6 +26,16 @@ class SessionState:
     property_mapping: PropertyMapping | None = None
     existing_page_ids: dict[str, str] = field(default_factory=dict)
     write_confirmed: bool = False
+    # Graph runtime helpers
+    awaiting_input: bool = False
+    graph_prompt: str | None = None
+    graph_candidates: list | None = None
+    graph_thread_id: str | None = None
+    graph_placeholder_id: str | None = None
+    # Optional override route set by the LLM router; consumed by the next router invocation
+    graph_route_override: str | None = None
+    # Accumulated conversation history (HumanMessage / AIMessage objects)
+    chat_messages: list = field(default_factory=list)
 
 
 def get_state() -> SessionState:
